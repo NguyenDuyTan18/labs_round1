@@ -1,0 +1,33 @@
+name: meko-fashion-shop
+hosts:
+  - name: team1
+    base_box: {image: kali, mgmt_user: debian}
+    flavor: standard.kali
+  - name: team2
+    base_box: {image: kali, mgmt_user: debian}
+    flavor: standard.kali
+  - name: team3
+    base_box: {image: kali, mgmt_user: debian}
+    flavor: standard.kali
+  - name: team4
+    base_box: {image: kali, mgmt_user: debian}
+    flavor: standard.kali
+routers:
+  - name: gateway
+    base_box: {image: debian-12-x86_64, mgmt_user: debian}
+    flavor: standard.small
+wan: {name: fashion-wan, cidr: 100.110.0.0/24}
+networks:
+  - name: fashion-lan
+    cidr: 10.90.0.0/24
+    accessible_by_user: true
+net_mappings:
+  - {host: team1, network: fashion-lan, ip: 10.90.0.11}
+  - {host: team2, network: fashion-lan, ip: 10.90.0.12}
+  - {host: team3, network: fashion-lan, ip: 10.90.0.13}
+  - {host: team4, network: fashion-lan, ip: 10.90.0.14}
+router_mappings:
+  - {router: gateway, network: fashion-lan, ip: 10.90.0.1}
+groups:
+  - name: fashion_shops
+    nodes: [team1, team2, team3, team4]

@@ -1,0 +1,3 @@
+-- Meko Atelier / legacy export / synthetic data only
+CREATE TABLE vouchers(code TEXT);
+INSERT INTO vouchers VALUES ('FLAG{0b3370e45444a91fd89783c4b3c4c691}');

@@ -1,0 +1,116 @@
+---
+- name: Install one independent fashion shop on each team VM
+  # Explicit host names also work with an older pool's fashion-shops inventory.
+  hosts: 'team1:team2:team3:team4'
+  become: true
+  vars:
+    fashion_team_addresses:
+      team1: 10.90.0.11
+      team2: 10.90.0.12
+      team3: 10.90.0.13
+      team4: 10.90.0.14
+  pre_tasks:
+    - name: Configure per-team trainee SSH access
+      ansible.builtin.include_tasks: trainee-access.yml
+  tasks:
+    - name: Configure the Kali desktop for CyberRange Open GUI
+      ansible.builtin.include_tasks: desktop.yml
+      when: fashion_desktop_enabled | default(true) | bool
+    - name: Install shop runtime packages
+      ansible.builtin.apt:
+        name: [python3, python3-flask, python3-waitress]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Create service account
+      ansible.builtin.user:
+        name: fashion-shop
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+    - name: Create application directory
+      ansible.builtin.file:
+        path: /opt/fashion-shop
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+    - name: Copy Python application and offline images
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../app/'
+        dest: /opt/fashion-shop/
+        owner: root
+        group: root
+        mode: 'u=rwX,go=rX'
+      notify: Restart shop
+    - name: Install unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/fashion-shop.service
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Meko Atelier isolated training shop
+          After=network.target
+          [Service]
+          User=fashion-shop
+          Group=fashion-shop
+          WorkingDirectory=/opt/fashion-shop
+          Environment=TEAM_ID={{ inventory_hostname }}
+          Environment=SHOP_DATA=/var/lib/fashion-shop
+          Environment=FASHION_TICK_SECONDS={{ fashion_tick_seconds | default(120) | int }}
+          StateDirectory=fashion-shop
+          StateDirectoryMode=0700
+          UMask=0077
+          ExecStart=/usr/bin/python3 -m waitress --listen=0.0.0.0:8080 --threads=4 --call app:create_app
+          Restart=on-failure
+          NoNewPrivileges=true
+          PrivateTmp=true
+          ProtectSystem=strict
+          ProtectHome=true
+          ReadWritePaths=/var/lib/fashion-shop
+          [Install]
+          WantedBy=multi-user.target
+      notify: Restart shop
+    - name: Start shop service
+      ansible.builtin.systemd:
+        name: fashion-shop
+        daemon_reload: true
+        enabled: true
+        state: started
+    - name: Flush service restart before health check
+      ansible.builtin.meta: flush_handlers
+    - name: Verify each shop locally
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8080/health
+        use_proxy: false
+        return_content: true
+      register: shop_health
+      until: shop_health.status | default(0) == 200
+      retries: 10
+      delay: 2
+    - name: Verify shops across the team network
+      ansible.builtin.uri:
+        url: 'http://{{ item.value }}:8080/health'
+        use_proxy: false
+        return_content: true
+      loop: '{{ fashion_team_addresses | dict2items }}'
+      register: fashion_peer_health
+      until: fashion_peer_health.status | default(0) == 200
+      retries: 10
+      delay: 2
+    - name: Verify each peer identifies the correct team
+      ansible.builtin.assert:
+        that:
+          - item.json.team == item.item.key
+      loop: '{{ fashion_peer_health.results }}'
+  handlers:
+    - name: Restart fashion desktop
+      ansible.builtin.systemd:
+        name: fashion-desktop
+        daemon_reload: true
+        state: restarted
+    - name: Restart shop
+      ansible.builtin.systemd:
+        name: fashion-shop
+        daemon_reload: true
+        state: restarted

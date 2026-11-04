@@ -1,0 +1,201 @@
+---
+# Password hashes come from private Ansible vars or the controller environment.
+# Never use the CyberRange management key as a trainee credential.
+- name: Protect the management account
+  ansible.builtin.assert:
+    that:
+      - ansible_user is defined
+      - ansible_user not in ['kali', 'user-access']
+      - (ansible_ssh_user | default(ansible_user)) not in ['kali', 'user-access']
+    fail_msg: Use a separate management account, such as the image's debian account.
+
+- name: Load private password hashes
+  ansible.builtin.set_fact:
+    fashion_access_hashes: "{{ fashion_trainee_password_hashes | default({'team1': lookup('ansible.builtin.env', 'FASHION_TEAM1_PASSWORD_HASH'), 'team2': lookup('ansible.builtin.env', 'FASHION_TEAM2_PASSWORD_HASH'), 'team3': lookup('ansible.builtin.env', 'FASHION_TEAM3_PASSWORD_HASH'), 'team4': lookup('ansible.builtin.env', 'FASHION_TEAM4_PASSWORD_HASH')}) }}"
+  no_log: true
+
+- name: Select automatic credential generation only when settings are absent
+  ansible.builtin.set_fact:
+    fashion_auto_ssh: "{{ fashion_trainee_password_hashes is not defined and fashion_access_hashes.values() | list == ['', '', '', ''] }}"
+    fashion_auto_gui: "{{ fashion_trainee_vnc_passwords is not defined and lookup('ansible.builtin.env', 'FASHION_TEAM1_VNC_PASSWORD') == '' and lookup('ansible.builtin.env', 'FASHION_TEAM2_VNC_PASSWORD') == '' and lookup('ansible.builtin.env', 'FASHION_TEAM3_VNC_PASSWORD') == '' and lookup('ansible.builtin.env', 'FASHION_TEAM4_VNC_PASSWORD') == '' }}"
+  no_log: true
+
+- name: Prepare persistent credentials when no credentials were supplied
+  ansible.builtin.include_tasks: generated-access.yml
+  when: fashion_auto_ssh or (fashion_auto_gui and (fashion_desktop_enabled | default(true) | bool))
+
+- name: Use this VM's generated SSH password hash
+  ansible.builtin.set_fact:
+    fashion_access_hashes: '{{ {inventory_hostname: fashion_generated_access.ssh_password_hash} }}'
+  when: fashion_auto_ssh
+  no_log: true
+
+- name: Check SSH credential settings without exposing secrets
+  block:
+    - name: Validate team password hashes
+      ansible.builtin.assert:
+        that:
+          - fashion_access_hashes is mapping
+          - fashion_access_hashes.keys() | list | sort == ([inventory_hostname] if (fashion_auto_ssh | default(false)) else ['team1', 'team2', 'team3', 'team4'])
+          - fashion_access_hashes.values() | list | unique | list | length == (1 if (fashion_auto_ssh | default(false)) else 4)
+          - inventory_hostname in fashion_access_hashes
+      no_log: true
+    - name: Validate each password hash
+      ansible.builtin.assert:
+        that:
+          - item is string
+          - item is match('^[$]6[$](rounds=[0-9]+[$])?[./0-9A-Za-z]{1,16}[$][./0-9A-Za-z]{86}$')
+      loop: '{{ fashion_access_hashes.values() | list }}'
+      no_log: true
+  rescue:
+    - name: Explain invalid SSH secret configuration
+      ansible.builtin.fail:
+        msg: >-
+          Invalid SSH credential settings. Manual configuration must supply team1, team2,
+          team3 and team4 with distinct nonempty SHA-512 crypt hashes ($6$).
+          Check fashion_trainee_password_hashes or all four FASHION_TEAMn_PASSWORD_HASH
+          variables in the Ansible worker. To use persistent random credentials, remove
+          the manual mapping and unset all four environment variables. No secret values
+          have been printed. See HUONG-DAN-SSH.md.
+
+- name: Install trainee SSH runtime
+  ansible.builtin.apt:
+    name: [openssh-server, passwd]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the trainee primary group
+  ansible.builtin.group:
+    name: user-access
+    state: present
+
+- name: Create the unprivileged trainee account
+  ansible.builtin.user:
+    name: user-access
+    group: user-access
+    password: '{{ fashion_access_hashes[inventory_hostname] }}'
+    password_lock: false
+    update_password: always
+    shell: /bin/bash
+    create_home: true
+    home: /home/user-access
+    groups: ''
+    append: false
+    expires: -1
+    password_expire_max: -1
+  no_log: true
+
+- name: Restrict access to the trainee home directory
+  ansible.builtin.file:
+    path: /home/user-access
+    state: directory
+    owner: user-access
+    group: user-access
+    mode: '0700'
+
+- name: Remove trainee SSH authorized keys
+  ansible.builtin.file:
+    path: /home/user-access/.ssh/authorized_keys
+    state: absent
+
+- name: Create the SSH drop-in directory
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Configure password-only SSH for trainees
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/00-fashion-trainee.conf
+    owner: root
+    group: root
+    mode: '0644'
+    validate: '/usr/sbin/sshd -t -f %s'
+    content: |
+      Match User user-access
+          PasswordAuthentication yes
+          PubkeyAuthentication no
+          KbdInteractiveAuthentication no
+          AuthenticationMethods password
+          PermitEmptyPasswords no
+          AllowTcpForwarding local
+      Match all
+
+- name: Load the SSH drop-ins before image defaults
+  ansible.builtin.blockinfile:
+    path: /etc/ssh/sshd_config
+    marker: '# {mark} FASHION SHOP SSH INCLUDES'
+    insertbefore: BOF
+    block: 'Include /etc/ssh/sshd_config.d/*.conf'
+    validate: '/usr/sbin/sshd -t -f %s'
+
+- name: Validate the complete SSH configuration
+  ansible.builtin.command:
+    argv: [/usr/sbin/sshd, '-t']
+  changed_when: false
+
+- name: Read effective trainee SSH policy
+  ansible.builtin.command:
+    argv: [/usr/sbin/sshd, '-T', '-C', 'user=user-access,host=localhost,addr=127.0.0.1']
+  register: fashion_effective_ssh
+  changed_when: false
+  no_log: true
+
+- name: Require effective password-only authentication
+  ansible.builtin.assert:
+    that:
+      - "'passwordauthentication yes' in fashion_effective_ssh.stdout_lines"
+      - "'pubkeyauthentication no' in fashion_effective_ssh.stdout_lines"
+      - "'authenticationmethods password' in fashion_effective_ssh.stdout_lines"
+      - "'permitemptypasswords no' in fashion_effective_ssh.stdout_lines"
+    fail_msg: Image SSH settings conflict with the trainee password-only policy.
+
+- name: Read effective management SSH policy
+  ansible.builtin.command:
+    argv: [/usr/sbin/sshd, '-T', '-C', 'user={{ ansible_user }},host=localhost,addr=127.0.0.1']
+  register: fashion_management_ssh
+  changed_when: false
+  no_log: true
+
+- name: Require management public key access
+  ansible.builtin.assert:
+    that:
+      - "'pubkeyauthentication yes' in fashion_management_ssh.stdout_lines"
+      - "'authenticationmethods any' in fashion_management_ssh.stdout_lines or 'authenticationmethods publickey' in fashion_management_ssh.stdout_lines"
+    fail_msg: Image SSH configuration prevents management key login; fix image policy before reloading SSH.
+
+- name: Reload the validated SSH configuration
+  ansible.builtin.service:
+    name: ssh
+    enabled: true
+    state: reloaded
+
+- name: Detect the optional default Kali account
+  ansible.builtin.getent:
+    database: passwd
+    key: kali
+    fail_key: false
+
+- name: Disable the default Kali account when present
+  ansible.builtin.user:
+    name: kali
+    password_lock: true
+    # Day 1 after epoch avoids shadow's special expiry-day zero semantics.
+    expires: 86400
+    shell: /usr/sbin/nologin
+  when: ansible_facts.getent_passwd.get('kali') is not none
+
+- name: Write the team's local service address
+  ansible.builtin.copy:
+    dest: /home/user-access/shop-addresses.txt
+    owner: user-access
+    group: user-access
+    mode: '0600'
+    content: |
+      Team: {{ inventory_hostname }}
+      Shop on this VM: http://127.0.0.1:8080/
+      Website accounts are separate from this SSH account. Register in the shop.
+      SSH access does not grant sudo or permission to edit the shop service.

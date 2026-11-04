@@ -1,0 +1,171 @@
+---
+- name: Detect Kali package source before installing the desktop
+  ansible.builtin.command:
+    argv: [/usr/bin/apt-cache, show, kali-desktop-xfce]
+  changed_when: false
+  register: fashion_kali_package
+  failed_when: false
+
+- name: Explain an incompatible desktop image
+  ansible.builtin.assert:
+    that:
+      - fashion_kali_package.rc == 0
+    fail_msg: >-
+      The selected image does not offer kali-desktop-xfce. Use the Kali image from
+      topology.yml, repair its apt sources, or set fashion_desktop_enabled=false
+      for SSH and HTTP only. Do not add Kali repositories to a Debian image.
+
+- name: Load private GUI passwords
+  ansible.builtin.set_fact:
+    fashion_gui_passwords: "{{ fashion_trainee_vnc_passwords | default({'team1': lookup('ansible.builtin.env', 'FASHION_TEAM1_VNC_PASSWORD'), 'team2': lookup('ansible.builtin.env', 'FASHION_TEAM2_VNC_PASSWORD'), 'team3': lookup('ansible.builtin.env', 'FASHION_TEAM3_VNC_PASSWORD'), 'team4': lookup('ansible.builtin.env', 'FASHION_TEAM4_VNC_PASSWORD')}) }}"
+  no_log: true
+
+- name: Use this VM's generated GUI password
+  ansible.builtin.set_fact:
+    fashion_gui_passwords: '{{ {inventory_hostname: fashion_generated_access.vnc_password} }}'
+  when: fashion_auto_gui
+  no_log: true
+
+- name: Check GUI credential settings without exposing secrets
+  block:
+    - name: Validate GUI password mapping
+      ansible.builtin.assert:
+        that:
+          - fashion_gui_passwords is mapping
+          - fashion_gui_passwords.keys() | list | sort == ([inventory_hostname] if (fashion_auto_gui | default(false)) else ['team1', 'team2', 'team3', 'team4'])
+          - fashion_gui_passwords.values() | list | unique | list | length == (1 if (fashion_auto_gui | default(false)) else 4)
+          - inventory_hostname in fashion_gui_passwords
+      no_log: true
+    - name: Validate each GUI password
+      ansible.builtin.assert:
+        that:
+          - item is string
+          - item | length == 8
+          - item.isascii()
+          - item.isalnum()
+      loop: '{{ fashion_gui_passwords.values() | list }}'
+      no_log: true
+  rescue:
+    - name: Explain invalid GUI secret configuration
+      ansible.builtin.fail:
+        msg: >-
+          Invalid GUI credential settings. Manual configuration requires four distinct
+          eight-character ASCII alphanumeric VNC passwords for team1 through team4.
+          Check fashion_trainee_vnc_passwords or all FASHION_TEAMn_VNC_PASSWORD worker
+          variables. To use persistent random credentials, remove the manual mapping
+          and unset all four variables. No secrets have been printed. See HUONG-DAN-KALI-GUI.md.
+
+- name: Install Kali XFCE desktop and VNC runtime
+  ansible.builtin.apt:
+    name: [kali-desktop-xfce, tigervnc-standalone-server, tigervnc-tools, dbus-x11, firefox-esr, acl]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+- name: Create desktop helper directory
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install desktop helpers
+  ansible.builtin.copy:
+    src: '{{ item.src }}'
+    dest: '/usr/local/libexec/{{ item.dest }}'
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - {src: fashion-xfce, dest: fashion-xfce}
+    - {src: set-vnc-password.py, dest: fashion-set-vnc-password}
+  notify: Restart fashion desktop
+
+- name: Create the private VNC directory
+  ansible.builtin.file:
+    path: /home/user-access/.vnc
+    state: directory
+    owner: user-access
+    group: user-access
+    mode: '0700'
+
+- name: Store the private VNC password
+  become: true
+  become_user: user-access
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, /usr/local/libexec/fashion-set-vnc-password]
+    stdin: '{{ fashion_gui_passwords[inventory_hostname] }}'
+  register: fashion_vnc_password_result
+  changed_when: fashion_vnc_password_result.stdout == 'changed'
+  no_log: true
+
+- name: Create the trainee desktop directory
+  ansible.builtin.file:
+    path: /home/user-access/Desktop
+    state: directory
+    owner: user-access
+    group: user-access
+    mode: '0700'
+
+- name: Add the shop shortcut to the desktop
+  ansible.builtin.copy:
+    dest: /home/user-access/Desktop/shop.desktop
+    owner: user-access
+    group: user-access
+    mode: '0700'
+    content: |
+      [Desktop Entry]
+      Type=Application
+      Name=Meko Atelier - {{ inventory_hostname }}
+      Exec=firefox-esr http://127.0.0.1:8080/
+      Icon=web-browser
+      Terminal=false
+
+- name: Install the unprivileged desktop service
+  ansible.builtin.copy:
+    src: fashion-desktop.service
+    dest: /etc/systemd/system/fashion-desktop.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart fashion desktop
+
+- name: Inspect existing services before starting VNC
+  ansible.builtin.service_facts:
+
+- name: Require the VNC port to be free on first start
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 5900
+    state: stopped
+    timeout: 3
+  when: ansible_facts.services.get('fashion-desktop.service', {}).get('state') != 'running'
+
+- name: Start the desktop service
+  ansible.builtin.systemd:
+    name: fashion-desktop
+    daemon_reload: true
+    enabled: true
+    state: started
+
+- name: Apply desktop configuration changes before checking VNC
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify the VNC listener
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 5900
+    search_regex: '^RFB '
+    timeout: 60
+
+- name: Verify the XFCE desktop session
+  ansible.builtin.command:
+    argv: [/usr/bin/pgrep, '-u', user-access, '-x', xfce4-session]
+  register: fashion_xfce_session
+  changed_when: false
+  retries: 15
+  delay: 2
+  until: fashion_xfce_session.rc == 0

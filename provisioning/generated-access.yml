@@ -1,0 +1,55 @@
+---
+- name: Install credential generation runtime
+  ansible.builtin.apt:
+    name: [python3, openssl]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create root-only credential state directory
+  ansible.builtin.file:
+    path: /var/lib/fashion-access
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Create credential helper directory
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install the private credential generator
+  ansible.builtin.copy:
+    src: generate-access.py
+    dest: /usr/local/libexec/fashion-generate-access
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Generate or load this VM's stable credentials
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, /usr/local/libexec/fashion-generate-access, '--team', '{{ inventory_hostname }}']
+  register: fashion_generated_result
+  changed_when: (fashion_generated_result.stdout | from_json).created
+  no_log: true
+
+- name: Keep generated credentials private in this play
+  ansible.builtin.set_fact:
+    fashion_generated_access: '{{ (fashion_generated_result.stdout | from_json).credentials }}'
+  no_log: true
+
+- name: Restrict the persisted credentials to the administrator
+  ansible.builtin.file:
+    path: /var/lib/fashion-access/credentials.json
+    state: file
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Explain how the organizer retrieves generated credentials
+  ansible.builtin.debug:
+    msg: 'Auto-generated credentials are stored privately on this VM at /var/lib/fashion-access/credentials.json. Read through management access with sudo; share only the active credentials of this team.'

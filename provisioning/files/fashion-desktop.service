@@ -1,0 +1,25 @@
+[Unit]
+Description=Kali XFCE desktop for CyberRange Open GUI
+After=network.target
+
+[Service]
+Type=simple
+User=user-access
+Group=user-access
+WorkingDirectory=/home/user-access
+Environment=HOME=/home/user-access
+Environment=XDG_RUNTIME_DIR=/run/fashion-desktop
+RuntimeDirectory=fashion-desktop
+RuntimeDirectoryMode=0700
+UMask=0077
+ExecStartPre=/usr/bin/tigervncserver -list -cleanstale
+ExecStart=/usr/bin/tigervncserver -fg -autokill yes :1 -rfbport 5900 -localhost no -SecurityTypes VncAuth -PasswordFile /home/user-access/.vnc/passwd -geometry 1440x900 -depth 24 -xstartup /usr/local/libexec/fashion-xfce
+ExecStop=/usr/bin/tigervncserver -kill :1 -rfbport 5900
+Restart=on-failure
+RestartSec=3
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

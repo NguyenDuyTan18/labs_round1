@@ -93,6 +93,8 @@
         use_proxy: false
         return_content: true
       loop: '{{ fashion_team_addresses | dict2items }}'
+      loop_control:
+        label: '{{ item.key }}'
       register: fashion_peer_health
       until: fashion_peer_health.status | default(0) == 200
       retries: 10
@@ -100,8 +102,12 @@
     - name: Verify each peer identifies the correct team
       ansible.builtin.assert:
         that:
-          - item.json.team == item.item.key
-      loop: '{{ fashion_peer_health.results }}'
+          - (fashion_peer_health.results | selectattr('item.key', 'equalto', item) | first).status == 200
+          - (fashion_peer_health.results | selectattr('item.key', 'equalto', item) | first).json.team == item
+        quiet: true
+        success_msg: 'Peer {{ item }} is healthy and identifies the correct team.'
+        fail_msg: 'Peer {{ item }} did not return the expected health response.'
+      loop: '{{ fashion_team_addresses.keys() | list }}'
     - name: Configure the Kali desktop for CyberRange Open GUI
       ansible.builtin.include_tasks: desktop.yml
       when: fashion_desktop_enabled | default(true) | bool

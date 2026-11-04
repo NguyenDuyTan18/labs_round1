@@ -1,0 +1,15 @@
+---
+# Deliberate training defaults. Edit these values before provisioning to change them.
+# SSH login username on all four VMs: user-access. The kali account stays locked.
+fashion_trainee_passwords:
+  team1: 'MekoTeam1@2026'
+  team2: 'MekoTeam2@2026'
+  team3: 'MekoTeam3@2026'
+  team4: 'MekoTeam4@2026'
+
+# TigerVNC passwords must contain exactly eight ASCII letters/digits.
+fashion_trainee_vnc_passwords:
+  team1: 'Meko1Vnc'
+  team2: 'Meko2Vnc'
+  team3: 'Meko3Vnc'
+  team4: 'Meko4Vnc'

@@ -8,22 +8,6 @@
       - fashion_vnc_display | default(9) | int <= 99
     fail_msg: Use a lab VNC port from 5901 to 5999 and a free X display from 1 to 99. Port 5900 belongs to the image/platform.
 
-- name: Detect Kali package source before installing the desktop
-  ansible.builtin.command:
-    argv: [/usr/bin/apt-cache, show, kali-desktop-xfce]
-  changed_when: false
-  register: fashion_kali_package
-  failed_when: false
-
-- name: Explain an incompatible desktop image
-  ansible.builtin.assert:
-    that:
-      - fashion_kali_package.rc == 0
-    fail_msg: >-
-      The selected image does not offer kali-desktop-xfce. Use the Kali image from
-      topology.yml, repair its apt sources, or set fashion_desktop_enabled=false
-      for SSH and HTTP only. Do not add Kali repositories to a Debian image.
-
 - name: Load private GUI passwords
   ansible.builtin.set_fact:
     fashion_gui_passwords: "{{ fashion_trainee_vnc_passwords | default({'team1': lookup('ansible.builtin.env', 'FASHION_TEAM1_VNC_PASSWORD'), 'team2': lookup('ansible.builtin.env', 'FASHION_TEAM2_VNC_PASSWORD'), 'team3': lookup('ansible.builtin.env', 'FASHION_TEAM3_VNC_PASSWORD'), 'team4': lookup('ansible.builtin.env', 'FASHION_TEAM4_VNC_PASSWORD')}) }}"
@@ -66,7 +50,8 @@
 
 - name: Install Kali XFCE desktop and VNC runtime
   ansible.builtin.apt:
-    name: [kali-desktop-xfce, tigervnc-standalone-server, tigervnc-tools, xauth, xfonts-base, dbus-x11, firefox-esr, acl]
+    # Use the XFCE runtime directly; the Kali branding metapackage is optional.
+    name: [xfce4, xfce4-terminal, tigervnc-standalone-server, tigervnc-tools, xauth, xfonts-base, dbus-x11, firefox-esr, acl]
     state: present
     update_cache: true
     cache_valid_time: 3600

@@ -16,9 +16,55 @@
 
 - name: Select automatic credential generation only when settings are absent
   ansible.builtin.set_fact:
-    fashion_auto_ssh: "{{ fashion_trainee_password_hashes is not defined and fashion_access_hashes.values() | list == ['', '', '', ''] }}"
+    fashion_yaml_ssh: "{{ fashion_trainee_passwords is defined and fashion_trainee_password_hashes is not defined and fashion_access_hashes.values() | list == ['', '', '', ''] }}"
+    fashion_auto_ssh: "{{ fashion_trainee_passwords is not defined and fashion_trainee_password_hashes is not defined and fashion_access_hashes.values() | list == ['', '', '', ''] }}"
     fashion_auto_gui: "{{ fashion_trainee_vnc_passwords is not defined and lookup('ansible.builtin.env', 'FASHION_TEAM1_VNC_PASSWORD') == '' and lookup('ansible.builtin.env', 'FASHION_TEAM2_VNC_PASSWORD') == '' and lookup('ansible.builtin.env', 'FASHION_TEAM3_VNC_PASSWORD') == '' and lookup('ansible.builtin.env', 'FASHION_TEAM4_VNC_PASSWORD') == '' }}"
   no_log: true
+
+- name: Hash configured YAML SSH passwords
+  when: fashion_yaml_ssh
+  block:
+    - name: Validate the configured team password mapping
+      ansible.builtin.assert:
+        that:
+          - fashion_trainee_passwords is mapping
+          - fashion_trainee_passwords.keys() | list | sort == ['team1', 'team2', 'team3', 'team4']
+          - fashion_trainee_passwords.values() | list | unique | list | length == 4
+      no_log: true
+
+    - name: Validate each configured SSH password
+      ansible.builtin.assert:
+        that:
+          - item is string
+          - item | length >= 12
+          - item | length <= 128
+          - item.isascii()
+          - item.isprintable()
+          - "' ' not in item"
+      loop: '{{ fashion_trainee_passwords.values() | list }}'
+      no_log: true
+
+    - name: Install the password hashing runtime
+      ansible.builtin.apt:
+        name: openssl
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Hash each configured password with OpenSSL
+      ansible.builtin.command:
+        argv: [/usr/bin/openssl, passwd, '-6', '-stdin', '-salt', "{{ 'fashion' ~ item.key ~ 'ssh' }}"]
+        stdin: '{{ item.value }}'
+      loop: '{{ fashion_trainee_passwords | dict2items }}'
+      register: fashion_configured_hashes
+      changed_when: false
+      no_log: true
+
+    - name: Use the configured password hashes
+      ansible.builtin.set_fact:
+        fashion_access_hashes: '{{ fashion_access_hashes | combine({item.item.key: item.stdout | trim}) }}'
+      loop: '{{ fashion_configured_hashes.results }}'
+      no_log: true
 
 - name: Prepare persistent credentials when no credentials were supplied
   ansible.builtin.include_tasks: generated-access.yml

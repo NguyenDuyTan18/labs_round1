@@ -1,5 +1,5 @@
 [Unit]
-Description=Separate lab XFCE desktop (preserves platform VNC on port 5900)
+Description=Authenticated XFCE desktop for the sandbox GUI
 After=network.target
 
 [Service]
@@ -13,7 +13,7 @@ RuntimeDirectory=fashion-desktop
 RuntimeDirectoryMode=0700
 UMask=0077
 ExecStartPre=/usr/bin/tigervncserver -list -cleanstale
-ExecStart=/usr/bin/tigervncserver -fg -autokill yes :{{ fashion_vnc_display | default(9) | int }} -rfbport {{ fashion_vnc_port | default(5901) | int }} -localhost yes -SecurityTypes VncAuth -PasswordFile /home/user-access/.vnc/passwd -geometry 1440x900 -depth 24 -xstartup /usr/local/libexec/fashion-xfce
+ExecStart=/usr/bin/tigervncserver -fg -autokill yes :{{ fashion_vnc_display | default(9) | int }} -rfbport {{ fashion_vnc_port | default(5900) | int }} -localhost {{ 'yes' if (fashion_vnc_localhost | default(false)) else 'no' }} -SecurityTypes VncAuth -PasswordFile /home/user-access/.vnc/passwd -geometry 1440x900 -depth 24 -xstartup /usr/local/libexec/fashion-xfce
 ExecStop=/usr/bin/tigervncserver -kill :{{ fashion_vnc_display | default(9) | int }}
 Restart=on-failure
 RestartSec=3

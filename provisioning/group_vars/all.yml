@@ -1,4 +1,11 @@
 ---
+# Portal VNC endpoint; keep image GUI Access enabled on OpenStack separately.
+fashion_vnc_port: 5900
+fashion_vnc_display: 9
+fashion_vnc_localhost: false
+# Stop a service only after its cgroup is verified to own the target VNC socket.
+fashion_vnc_replace_units: [lightdm.service, x11vnc.service]
+
 # Deliberate training defaults. Edit these values before provisioning to change them.
 # SSH login username on all four VMs: user-access. The kali account stays locked.
 fashion_trainee_passwords:

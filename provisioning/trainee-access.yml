@@ -106,7 +106,7 @@
 
 - name: Install trainee SSH runtime
   ansible.builtin.apt:
-    name: [openssh-server, passwd]
+    name: [openssh-server, openssh-client, passwd, sshpass]
     state: present
     update_cache: true
     cache_valid_time: 3600
@@ -219,6 +219,10 @@
     enabled: true
     state: reloaded
 
+- name: Verify the applied trainee SSH password
+  ansible.builtin.include_tasks: verify-access.yml
+  when: fashion_yaml_ssh or fashion_auto_ssh
+
 - name: Detect the optional default Kali account
   ansible.builtin.getent:
     database: passwd
@@ -242,6 +246,7 @@
     mode: '0600'
     content: |
       Team: {{ inventory_hostname }}
+      SSH and Open Console username: user-access (not kali)
       Shop on this VM (Apache): http://127.0.0.1/
       Website accounts are separate from this SSH account. Register in the shop.
       SSH access does not grant sudo or permission to edit the shop service.

@@ -1,0 +1,89 @@
+---
+- name: Test trainee authentication with the actual SSH service
+  block:
+    - name: Locate a public host key for the SSH login check
+      ansible.builtin.find:
+        paths: /etc/ssh
+        patterns: 'ssh_host_*_key.pub'
+        file_type: file
+      register: fashion_host_keys
+
+    - name: Require a host key before authenticating
+      ansible.builtin.assert:
+        that:
+          - fashion_host_keys.matched > 0
+        fail_msg: No SSH public host key found; cannot pin the local SSH identity.
+
+    - name: Read the local public SSH host key
+      ansible.builtin.slurp:
+        src: '{{ (fashion_host_keys.files | sort(attribute="path") | first).path }}'
+      register: fashion_host_key
+
+    - name: Create a temporary pinned known hosts file
+      ansible.builtin.tempfile:
+        state: file
+        prefix: fashion-known-hosts-
+      register: fashion_known_hosts
+
+    - name: Pin the VM host key for the SSH login check
+      ansible.builtin.copy:
+        dest: '{{ fashion_known_hosts.path }}'
+        content: '127.0.0.1 {{ fashion_host_key.content | b64decode | trim }}'
+        mode: '0600'
+
+    - name: Verify password login through the running SSH daemon
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/sshpass
+          - '-e'
+          - /usr/bin/ssh
+          - '-T'
+          - '-o'
+          - 'UserKnownHostsFile={{ fashion_known_hosts.path }}'
+          - '-o'
+          - StrictHostKeyChecking=yes
+          - '-o'
+          - ControlMaster=no
+          - '-o'
+          - ControlPath=none
+          - '-o'
+          - BatchMode=no
+          - '-o'
+          - PubkeyAuthentication=no
+          - '-o'
+          - PasswordAuthentication=yes
+          - '-o'
+          - PreferredAuthentications=password
+          - '-o'
+          - NumberOfPasswordPrompts=1
+          - '-o'
+          - ConnectTimeout=10
+          - '-o'
+          - ConnectionAttempts=1
+          - user-access@127.0.0.1
+          - /usr/bin/true
+      environment:
+        SSHPASS: '{{ fashion_trainee_passwords[inventory_hostname] if fashion_yaml_ssh else fashion_generated_access.ssh_password }}'
+      register: fashion_login_check
+      changed_when: false
+      no_log: true
+  rescue:
+    - name: Read SSH authentication failure details
+      ansible.builtin.command:
+        argv: [/usr/bin/journalctl, '-u', ssh, '-n', '50', '--no-pager', '-o', cat]
+      register: fashion_ssh_journal
+      changed_when: false
+      failed_when: false
+
+    - name: Report the failed login without exposing the password
+      ansible.builtin.fail:
+        msg: |
+          SSH login failed for user-access on {{ inventory_hostname }}.
+          The configured password has not passed the live SSH/PAM check.
+          SSH journal: {{ fashion_ssh_journal.stdout | default('unavailable') }}
+  always:
+    - name: Remove the temporary known hosts file
+      ansible.builtin.file:
+        path: '{{ fashion_known_hosts.path }}'
+        state: absent
+      when: fashion_known_hosts is defined and fashion_known_hosts.path is defined

@@ -1,12 +1,12 @@
 ---
-- name: Validate the separate lab VNC endpoint
+- name: Validate the portal VNC endpoint
   ansible.builtin.assert:
     that:
-      - fashion_vnc_port | default(5901) | int >= 5901
-      - fashion_vnc_port | default(5901) | int <= 5999
+      - fashion_vnc_port | default(5900) | int >= 5900
+      - fashion_vnc_port | default(5900) | int <= 5999
       - fashion_vnc_display | default(9) | int >= 1
       - fashion_vnc_display | default(9) | int <= 99
-    fail_msg: Use a lab VNC port from 5901 to 5999 and a free X display from 1 to 99. Port 5900 belongs to the image/platform.
+    fail_msg: Use a VNC port from 5900 to 5999 and a free X display from 1 to 99.
 
 - name: Load private GUI passwords
   ansible.builtin.set_fact:
@@ -51,7 +51,7 @@
 - name: Install Kali XFCE desktop and VNC runtime
   ansible.builtin.apt:
     # Use the XFCE runtime directly; the Kali branding metapackage is optional.
-    name: [xfce4, xfce4-terminal, tigervnc-standalone-server, tigervnc-tools, xauth, xfonts-base, dbus-x11, firefox-esr, acl]
+    name: [xfce4, xfce4-terminal, tigervnc-standalone-server, tigervnc-tools, xauth, xfonts-base, dbus-x11, firefox-esr, acl, iproute2]
     state: present
     update_cache: true
     cache_valid_time: 3600
@@ -97,6 +97,7 @@
   loop:
     - {src: fashion-xfce, dest: fashion-xfce}
     - {src: set-vnc-password.py, dest: fashion-set-vnc-password}
+    - {src: vnc-listener.py, dest: fashion-vnc-listener}
   register: fashion_desktop_helpers
 
 - name: Create the private VNC directory
@@ -164,20 +165,49 @@
     mode: '0644'
   register: fashion_desktop_unit
 
-- name: Inspect existing services before starting VNC
-  ansible.builtin.service_facts:
-  no_log: true
+- name: Identify the current VNC listener without stopping it
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, /usr/local/libexec/fashion-vnc-listener, '--port', '{{ fashion_vnc_port | default(5900) | int }}']
+    stdin: "{{ fashion_vnc_replace_units | default(['lightdm.service', 'x11vnc.service']) | to_json }}"
+  register: fashion_vnc_listener_result
+  changed_when: false
 
-- name: Require the VNC port to be free on first start
-  ansible.builtin.wait_for:
-    host: 127.0.0.1
-    port: '{{ fashion_vnc_port | default(5901) | int }}'
-    state: stopped
-    timeout: 3
-  when: ansible_facts.services.get('fashion-desktop.service', {}).get('state') != 'running'
+- name: Keep the verified VNC migration plan
+  ansible.builtin.set_fact:
+    fashion_vnc_listener_plan: '{{ fashion_vnc_listener_result.stdout | from_json }}'
+
+- name: Refuse to replace an unknown or protected listener
+  ansible.builtin.assert:
+    that:
+      - fashion_vnc_listener_plan.unknown | length == 0
+    fail_msg: 'VNC port owner requires review: {{ fashion_vnc_listener_plan.unknown }}. No service has been stopped.'
 
 - name: Start and verify the desktop with failure diagnostics
   block:
+    - name: Remember the startup policy of verified native GUI services
+      ansible.builtin.command:
+        argv: [/usr/bin/systemctl, is-enabled, '{{ item }}']
+      loop: '{{ fashion_vnc_listener_plan.stop_units }}'
+      register: fashion_native_vnc_policy
+      changed_when: false
+      failed_when: false
+
+    - name: Stop only verified native VNC services
+      ansible.builtin.systemd:
+        name: '{{ item }}'
+        state: stopped
+        enabled: false
+      loop: '{{ fashion_vnc_listener_plan.stop_units }}'
+      register: fashion_native_vnc_stopped
+
+    - name: Require the VNC port to be free on first start
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: '{{ fashion_vnc_port | default(5900) | int }}'
+        state: stopped
+        timeout: 3
+      when: not fashion_vnc_listener_plan.own_listener
+
     - name: Start the desktop service
       ansible.builtin.systemd:
         name: fashion-desktop
@@ -188,7 +218,7 @@
     - name: Verify the VNC listener
       ansible.builtin.wait_for:
         host: 127.0.0.1
-        port: '{{ fashion_vnc_port | default(5901) | int }}'
+        port: '{{ fashion_vnc_port | default(5900) | int }}'
         search_regex: '^RFB '
         timeout: 60
 
@@ -200,6 +230,15 @@
       retries: 15
       delay: 2
       until: fashion_xfce_session.rc == 0
+
+    - name: Verify VNC is reachable over the sandbox network
+      ansible.builtin.wait_for:
+        host: '{{ fashion_team_addresses[inventory_hostname] }}'
+        port: '{{ fashion_vnc_port | default(5900) | int }}'
+        search_regex: '^RFB '
+        timeout: 30
+      delegate_to: gateway
+      become: false
   rescue:
     - name: Read desktop systemd failure details
       ansible.builtin.command:
@@ -215,6 +254,22 @@
       changed_when: false
       failed_when: false
 
+    - name: Stop the failed lab GUI before restoring the native listener
+      ansible.builtin.systemd:
+        name: fashion-desktop
+        state: stopped
+      when: fashion_native_vnc_stopped is defined and fashion_native_vnc_stopped.changed
+      failed_when: false
+
+    - name: Restore the verified native GUI services after a failed migration
+      ansible.builtin.systemd:
+        name: '{{ item.item }}'
+        state: started
+        enabled: '{{ true if (item.stdout | trim == "enabled") else omit }}'
+      loop: '{{ fashion_native_vnc_policy.results | default([]) }}'
+      register: fashion_native_vnc_restore
+      failed_when: false
+
     - name: Explain the desktop failure without hiding it
       ansible.builtin.fail:
         msg: |
@@ -222,4 +277,6 @@
           {{ fashion_desktop_failure.stdout | default('No systemd status available') }}
           Recent journal:
           {{ fashion_desktop_journal.stdout | default('No journal available') }}
+          Native GUI rollback: {{ fashion_native_vnc_restore.results | default([]) | map(attribute='item.item') | list }}.
+          Review the restore task results if a native GUI service did not restart.
           Apache and shop were deployed and checked before this optional desktop step.

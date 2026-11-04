@@ -29,5 +29,5 @@ net_mappings:
 router_mappings:
   - {router: gateway, network: fashion-lan, ip: 10.90.0.1}
 groups:
-  - name: fashion-shops
+  - name: fashionshops
     nodes: [team1, team2, team3, team4]

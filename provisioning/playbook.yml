@@ -1,6 +1,6 @@
 ---
 - name: Install one independent fashion shop on each team VM
-  # Explicit host names also work with an older pool's fashion-shops inventory.
+  # Select teams directly, independent of inventory group naming.
   hosts: 'team1:team2:team3:team4'
   become: true
   vars:

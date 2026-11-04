@@ -45,6 +45,9 @@ def ensure_credentials(path, team):
         raise ValueError('OpenSSL did not return a SHA-512 crypt hash')
     value = {'team': team, 'username': 'user-access', 'ssh_password': ssh_password,
              'ssh_password_hash': hashed, 'vnc_password': vnc_password}
+    # The helper can also run directly, without an Ansible directory task first.
+    # Do not chmod an existing parent (it might be a shared system directory).
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix='.credentials-', dir=path.parent)
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as stream:
@@ -61,9 +64,26 @@ def ensure_credentials(path, team):
     return value, True
 
 
-if __name__ == '__main__':
+def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--team', required=True)
-    args = parser.parse_args()
-    credentials, created = ensure_credentials(Path('/var/lib/fashion-access/credentials.json'), args.team)
+    parser.add_argument('--team', required=True, choices=('team1', 'team2', 'team3', 'team4'))
+    parser.add_argument('--state-file', type=Path,
+                        default=Path('/var/lib/fashion-access/credentials.json'),
+                        help='Private state file; defaults to this VM\'s credential state')
+    parser.add_argument('--show', action='store_true',
+                        help='Show existing SSH/VNC login details without generating or changing them')
+    args = parser.parse_args(argv)
+    if args.show:
+        try:
+            credentials = read_credentials(args.state_file, args.team)
+        except (OSError, ValueError) as exc:
+            parser.error('Cannot read this team\'s credentials. Complete provisioning first. ' + str(exc))
+        print(json.dumps({key: credentials[key] for key in
+                          ('team', 'username', 'ssh_password', 'vnc_password')}, indent=2))
+        return
+    credentials, created = ensure_credentials(args.state_file, args.team)
     print(json.dumps({'credentials': credentials, 'created': created}))
+
+
+if __name__ == '__main__':
+    main()

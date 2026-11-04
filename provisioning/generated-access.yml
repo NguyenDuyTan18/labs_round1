@@ -52,4 +52,8 @@
 
 - name: Explain how the organizer retrieves generated credentials
   ansible.builtin.debug:
-    msg: 'Auto-generated credentials are stored privately on this VM at /var/lib/fashion-access/credentials.json. Read through management access with sudo; share only the active credentials of this team.'
+    msg: >-
+      SSH and VNC credentials are generated automatically and kept privately at
+      /var/lib/fashion-access/credentials.json. Organizer retrieval on this VM:
+      sudo /usr/bin/python3 /usr/local/libexec/fashion-generate-access --team {{ inventory_hostname }} --show
+      Share only this team's active credentials. No passwords are printed in provisioning logs.

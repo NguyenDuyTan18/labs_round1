@@ -66,12 +66,33 @@
 
 - name: Install Kali XFCE desktop and VNC runtime
   ansible.builtin.apt:
-    name: [kali-desktop-xfce, tigervnc-standalone-server, tigervnc-tools, dbus-x11, firefox-esr, acl]
+    name: [kali-desktop-xfce, tigervnc-standalone-server, tigervnc-tools, xauth, xfonts-base, dbus-x11, firefox-esr, acl]
     state: present
     update_cache: true
     cache_valid_time: 3600
   environment:
     DEBIAN_FRONTEND: noninteractive
+
+- name: Check the hostname required by TigerVNC
+  ansible.builtin.command:
+    argv: [/bin/hostname, '-f']
+  register: fashion_hostname_check
+  changed_when: false
+  failed_when: false
+
+- name: Resolve the local hostname on minimal cloud images
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: '# {mark} FASHION SHOP HOSTNAME'
+    block: '127.0.1.1 {{ ansible_hostname }}'
+  when: fashion_hostname_check.rc != 0 or fashion_hostname_check.stdout | trim == ''
+
+- name: Verify the hostname before launching the VNC wrapper
+  ansible.builtin.command:
+    argv: [/bin/hostname, '-f']
+  register: fashion_hostname_ready
+  changed_when: false
+  failed_when: fashion_hostname_ready.rc != 0 or fashion_hostname_ready.stdout | trim == ''
 
 - name: Create desktop helper directory
   ansible.builtin.file:
@@ -91,11 +112,27 @@
   loop:
     - {src: fashion-xfce, dest: fashion-xfce}
     - {src: set-vnc-password.py, dest: fashion-set-vnc-password}
-  notify: Restart fashion desktop
+  register: fashion_desktop_helpers
 
 - name: Create the private VNC directory
   ansible.builtin.file:
     path: /home/user-access/.vnc
+    state: directory
+    owner: user-access
+    group: user-access
+    mode: '0700'
+
+- name: Create the trainee XDG configuration directory
+  ansible.builtin.file:
+    path: /home/user-access/.config
+    state: directory
+    owner: user-access
+    group: user-access
+    mode: '0700'
+
+- name: Create the modern TigerVNC configuration directory
+  ansible.builtin.file:
+    path: /home/user-access/.config/tigervnc
     state: directory
     owner: user-access
     group: user-access
@@ -110,7 +147,6 @@
   register: fashion_vnc_password_result
   changed_when: fashion_vnc_password_result.stdout == 'changed'
   no_log: true
-  notify: Restart fashion desktop
 
 - name: Create the trainee desktop directory
   ansible.builtin.file:
@@ -141,7 +177,7 @@
     owner: root
     group: root
     mode: '0644'
-  notify: Restart fashion desktop
+  register: fashion_desktop_unit
 
 - name: Inspect existing services before starting VNC
   ansible.builtin.service_facts:
@@ -155,28 +191,50 @@
     timeout: 3
   when: ansible_facts.services.get('fashion-desktop.service', {}).get('state') != 'running'
 
-- name: Start the desktop service
-  ansible.builtin.systemd:
-    name: fashion-desktop
-    daemon_reload: true
-    enabled: true
-    state: started
+- name: Start and verify the desktop with failure diagnostics
+  block:
+    - name: Start the desktop service
+      ansible.builtin.systemd:
+        name: fashion-desktop
+        daemon_reload: true
+        enabled: true
+        state: "{{ 'restarted' if (fashion_desktop_helpers.changed or fashion_vnc_password_result.changed or fashion_desktop_unit.changed) else 'started' }}"
 
-- name: Apply desktop configuration changes before checking VNC
-  ansible.builtin.meta: flush_handlers
+    - name: Verify the VNC listener
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: '{{ fashion_vnc_port | default(5901) | int }}'
+        search_regex: '^RFB '
+        timeout: 60
 
-- name: Verify the VNC listener
-  ansible.builtin.wait_for:
-    host: 127.0.0.1
-    port: '{{ fashion_vnc_port | default(5901) | int }}'
-    search_regex: '^RFB '
-    timeout: 60
+    - name: Verify the XFCE desktop session
+      ansible.builtin.command:
+        argv: [/usr/bin/pgrep, '-u', user-access, '-x', xfce4-session]
+      register: fashion_xfce_session
+      changed_when: false
+      retries: 15
+      delay: 2
+      until: fashion_xfce_session.rc == 0
+  rescue:
+    - name: Read desktop systemd failure details
+      ansible.builtin.command:
+        argv: [/usr/bin/systemctl, show, fashion-desktop, '--property=Result,ActiveState,ExecMainStatus,ExecStartPre']
+      register: fashion_desktop_failure
+      changed_when: false
+      failed_when: false
 
-- name: Verify the XFCE desktop session
-  ansible.builtin.command:
-    argv: [/usr/bin/pgrep, '-u', user-access, '-x', xfce4-session]
-  register: fashion_xfce_session
-  changed_when: false
-  retries: 15
-  delay: 2
-  until: fashion_xfce_session.rc == 0
+    - name: Read recent desktop journal
+      ansible.builtin.command:
+        argv: [/usr/bin/journalctl, '-u', fashion-desktop, '-n', '80', '--no-pager', '-o', cat]
+      register: fashion_desktop_journal
+      changed_when: false
+      failed_when: false
+
+    - name: Explain the desktop failure without hiding it
+      ansible.builtin.fail:
+        msg: |
+          Desktop startup or verification failed on {{ inventory_hostname }}.
+          {{ fashion_desktop_failure.stdout | default('No systemd status available') }}
+          Recent journal:
+          {{ fashion_desktop_journal.stdout | default('No journal available') }}
+          Apache and shop were deployed and checked before this optional desktop step.

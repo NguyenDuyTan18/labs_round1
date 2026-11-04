@@ -110,11 +110,6 @@
       ansible.builtin.systemd:
         name: apache2
         state: reloaded
-    - name: Restart fashion desktop
-      ansible.builtin.systemd:
-        name: fashion-desktop
-        daemon_reload: true
-        state: restarted
     - name: Restart shop
       ansible.builtin.systemd:
         name: fashion-shop

@@ -6,6 +6,35 @@
     update_cache: true
     cache_valid_time: 3600
 
+- name: Restore Apache directories missing from minimal images
+  ansible.builtin.file:
+    path: '{{ item.path }}'
+    state: directory
+    owner: '{{ item.owner }}'
+    group: '{{ item.group }}'
+    mode: '{{ item.mode }}'
+  loop:
+    - {path: /var/log/apache2, owner: root, group: adm, mode: '0750'}
+    - {path: /run/apache2, owner: root, group: root, mode: '0755'}
+    - {path: /var/lock/apache2, owner: www-data, group: www-data, mode: '0755'}
+
+- name: Configure a resolvable global Apache server name
+  ansible.builtin.copy:
+    dest: /etc/apache2/conf-available/fashion-shop-servername.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      ServerName 127.0.0.1
+  notify: Reload Apache
+
+- name: Enable the global Apache server name
+  ansible.builtin.file:
+    src: /etc/apache2/conf-available/fashion-shop-servername.conf
+    dest: /etc/apache2/conf-enabled/fashion-shop-servername.conf
+    state: link
+  notify: Reload Apache
+
 - name: Enable Apache HTTP proxy modules
   ansible.builtin.command:
     argv: [/usr/sbin/a2enmod, proxy, proxy_http]

@@ -1,4 +1,13 @@
 ---
+- name: Validate the separate lab VNC endpoint
+  ansible.builtin.assert:
+    that:
+      - fashion_vnc_port | default(5901) | int >= 5901
+      - fashion_vnc_port | default(5901) | int <= 5999
+      - fashion_vnc_display | default(9) | int >= 1
+      - fashion_vnc_display | default(9) | int <= 99
+    fail_msg: Use a lab VNC port from 5901 to 5999 and a free X display from 1 to 99. Port 5900 belongs to the image/platform.
+
 - name: Detect Kali package source before installing the desktop
   ansible.builtin.command:
     argv: [/usr/bin/apt-cache, show, kali-desktop-xfce]
@@ -101,6 +110,7 @@
   register: fashion_vnc_password_result
   changed_when: fashion_vnc_password_result.stdout == 'changed'
   no_log: true
+  notify: Restart fashion desktop
 
 - name: Create the trainee desktop directory
   ansible.builtin.file:
@@ -120,13 +130,13 @@
       [Desktop Entry]
       Type=Application
       Name=Meko Atelier - {{ inventory_hostname }}
-      Exec=firefox-esr http://127.0.0.1:8080/
+      Exec=firefox-esr http://127.0.0.1/
       Icon=web-browser
       Terminal=false
 
 - name: Install the unprivileged desktop service
-  ansible.builtin.copy:
-    src: fashion-desktop.service
+  ansible.builtin.template:
+    src: '{{ playbook_dir }}/files/fashion-desktop.service'
     dest: /etc/systemd/system/fashion-desktop.service
     owner: root
     group: root
@@ -135,11 +145,12 @@
 
 - name: Inspect existing services before starting VNC
   ansible.builtin.service_facts:
+  no_log: true
 
 - name: Require the VNC port to be free on first start
   ansible.builtin.wait_for:
     host: 127.0.0.1
-    port: 5900
+    port: '{{ fashion_vnc_port | default(5901) | int }}'
     state: stopped
     timeout: 3
   when: ansible_facts.services.get('fashion-desktop.service', {}).get('state') != 'running'
@@ -157,7 +168,7 @@
 - name: Verify the VNC listener
   ansible.builtin.wait_for:
     host: 127.0.0.1
-    port: 5900
+    port: '{{ fashion_vnc_port | default(5901) | int }}'
     search_regex: '^RFB '
     timeout: 60
 

@@ -1,0 +1,50 @@
+---
+- name: Install Apache web server
+  ansible.builtin.apt:
+    name: apache2
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Enable Apache HTTP proxy modules
+  ansible.builtin.command:
+    argv: [/usr/sbin/a2enmod, proxy, proxy_http]
+  register: fashion_apache_modules
+  changed_when: "'Enabling module' in fashion_apache_modules.stdout"
+  notify: Reload Apache
+
+- name: Install the fashion shop virtual host
+  ansible.builtin.copy:
+    src: fashion-shop-apache.conf
+    dest: /etc/apache2/sites-available/000-fashion-shop.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload Apache
+
+- name: Disable the default Apache welcome site
+  ansible.builtin.file:
+    path: /etc/apache2/sites-enabled/000-default.conf
+    state: absent
+  notify: Reload Apache
+
+- name: Enable the fashion shop virtual host
+  ansible.builtin.file:
+    src: /etc/apache2/sites-available/000-fashion-shop.conf
+    dest: /etc/apache2/sites-enabled/000-fashion-shop.conf
+    state: link
+  notify: Reload Apache
+
+- name: Validate the complete Apache configuration
+  ansible.builtin.command:
+    argv: [/usr/sbin/apache2ctl, configtest]
+  changed_when: false
+
+- name: Start the Apache web service
+  ansible.builtin.systemd:
+    name: apache2
+    enabled: true
+    state: started
+
+- name: Apply Apache configuration before checking the web service
+  ansible.builtin.meta: flush_handlers

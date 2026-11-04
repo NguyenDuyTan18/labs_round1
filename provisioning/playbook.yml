@@ -13,9 +13,6 @@
     - name: Configure per-team trainee SSH access
       ansible.builtin.include_tasks: trainee-access.yml
   tasks:
-    - name: Configure the Kali desktop for CyberRange Open GUI
-      ansible.builtin.include_tasks: desktop.yml
-      when: fashion_desktop_enabled | default(true) | bool
     - name: Install shop runtime packages
       ansible.builtin.apt:
         name: [python3, python3-flask, python3-waitress]
@@ -61,7 +58,7 @@
           StateDirectory=fashion-shop
           StateDirectoryMode=0700
           UMask=0077
-          ExecStart=/usr/bin/python3 -m waitress --listen=0.0.0.0:8080 --threads=4 --call app:create_app
+          ExecStart=/usr/bin/python3 -m waitress --listen=127.0.0.1:8080 --threads=4 --call app:create_app
           Restart=on-failure
           NoNewPrivileges=true
           PrivateTmp=true
@@ -79,9 +76,11 @@
         state: started
     - name: Flush service restart before health check
       ansible.builtin.meta: flush_handlers
+    - name: Configure Apache as the public web service
+      ansible.builtin.include_tasks: apache.yml
     - name: Verify each shop locally
       ansible.builtin.uri:
-        url: http://127.0.0.1:8080/health
+        url: http://127.0.0.1/health
         use_proxy: false
         return_content: true
       register: shop_health
@@ -90,7 +89,7 @@
       delay: 2
     - name: Verify shops across the team network
       ansible.builtin.uri:
-        url: 'http://{{ item.value }}:8080/health'
+        url: 'http://{{ item.value }}/health'
         use_proxy: false
         return_content: true
       loop: '{{ fashion_team_addresses | dict2items }}'
@@ -103,7 +102,14 @@
         that:
           - item.json.team == item.item.key
       loop: '{{ fashion_peer_health.results }}'
+    - name: Configure the Kali desktop for CyberRange Open GUI
+      ansible.builtin.include_tasks: desktop.yml
+      when: fashion_desktop_enabled | default(true) | bool
   handlers:
+    - name: Reload Apache
+      ansible.builtin.systemd:
+        name: apache2
+        state: reloaded
     - name: Restart fashion desktop
       ansible.builtin.systemd:
         name: fashion-desktop

@@ -196,6 +196,6 @@
     mode: '0600'
     content: |
       Team: {{ inventory_hostname }}
-      Shop on this VM: http://127.0.0.1:8080/
+      Shop on this VM (Apache): http://127.0.0.1/
       Website accounts are separate from this SSH account. Register in the shop.
       SSH access does not grant sudo or permission to edit the shop service.
